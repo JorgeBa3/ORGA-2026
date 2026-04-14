@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard DHT11 - ESP32 Serial</title>
+    
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        /* 2. Estilos (CSS) - Diseño tipo Dashboard */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e9ecef;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { color: #343a40; margin-bottom: 30px; }
+
+        /* Contenedor principal de tarjetas */
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        /* Estilo base para todas las tarjetas */
+        .card {
+            background-color: white;
+            border-radius: 15px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.05);
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-3px); }
+        .card-header {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #495057;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* Estilos para los números grandes */
+        .data-display {
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            flex-grow: 1;
+        }
+        .data-item { text-align: center; }
+        .valor-principal {
+            font-size: 3.5rem;
+            font-weight: bold;
+            margin: 0;
+        }
+        .valor-promedio {
+            font-size: 1.2rem;
+            color: #6c757d;
+            margin-top: 5px;
+        }
+        .etiqueta-pequena { font-size: 0.9rem; color: #adb5bd; text-transform: uppercase; }
+
+        /* Colores específicos para Temp y Hum */
+        .temp-color { color: #e74c3c; } /* Rojo */
+        .hum-color { color: #3498db; }  /* Azul */
+
+        /* Contenedor de la gráfica (importante para Chart.js) */
+        .chart-container {
+            position: relative;
+            height: 200px; /* Altura fija para la gráfica */
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Panel de Control de Sensor Serial</h1>
+
+    <div class="dashboard-container">
+        
+        <div class="card">
+            <div class="card-header">
+                <span>Temperatura (°C)</span>
+            </div>
+            <div class="data-display">
+                <div class="data-item">
+                    <div class="etiqueta-pequena">Actual</div>
+                    <p class="valor-principal temp-color"><span id="temp-actual">--</span><span style="font-size: 2rem;">°</span></p>
+                </div>
+                <div class="data-item">
+                    <div class="etiqueta-pequena">Promedio</div>
+                    <p class="valor-promedio">Avg: <span id="temp-avg">--</span>°</p>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="chartTemp"></canvas> </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <span>Humedad (%)</span>
+            </div>
+            <div class="data-display">
+                <div class="data-item">
+                    <div class="etiqueta-pequena">Actual</div>
+                    <p class="valor-principal hum-color"><span id="hum-actual">--</span><span style="font-size: 2rem;">%</span></p>
+                </div>
+                <div class="data-item">
+                    <div class="etiqueta-pequena">Promedio</div>
+                    <p class="valor-promedio">Avg: <span id="hum-avg">--</span>%</p>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="chartHum"></canvas> </div>
+        </div>
+
+    </div>
+
+    <script>
+        // 3. Lógica (JavaScript)
+
+        // --- Configuración Inicial ---
+        const socket = io('http://localhost:3000');
+        const MAX_DATOS_HISTORIAL = 20; // Cuántos puntos mostrar en la gráfica antes de borrar el viejo
+
+        // Estructuras de datos para el historial
+        let historialTemperatura = [];
+        let historialHumedad = [];
+        let etiquetasTiempo = []; // Para el eje X (tiempo)
+
+        // --- Inicialización de Gráficas (Chart.js) ---
+        // Función auxiliar para crear la configuración base de las gráficas
+        function crearConfiguracionGrafica(label, colorPrincipal, colorFondo) {
+            return {
+                type: 'line', // Tipo de gráfica: Línea
+                data: {
+                    labels: etiquetasTiempo, // Eje X vacío al inicio
+                    datasets: [{
+                        label: label,
+                        data: [], // Eje Y vacío al inicio
+                        borderColor: colorPrincipal,
+                        backgroundColor: colorFondo,
+                        borderWidth: 2,
+                        fill: true, // Rellenar debajo de la línea
+                        tension: 0.4, // Suavizar la línea (curvas)
+                        pointRadius: 0 // Ocultar los puntos individuales
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false, // Usar la altura definida en CSS
+                    plugins: { legend: { display: false } }, // Ocultar leyenda
+                    scales: {
+                        x: { display: false }, // Ocultar eje X para diseño limpio
+                        y: { 
+                            beginAtZero: false, // No forzar inicio en 0
+                            grid: { color: '#f1f3f5' }
+                        }
+                    },
+                    animation: { duration: 200 } // Animación rápida al actualizar
+                }
+            };
+        }
+
+        // Crear las instancias de las gráficas en los <canvas>
+        const ctxTemp = document.getElementById('chartTemp').getContext('2d');
+        const chartTemp = new Chart(ctxTemp, crearConfiguracionGrafica('Temp', '#e74c3c', 'rgba(231, 76, 60, 0.1)'));
+
+        const ctxHum = document.getElementById('chartHum').getContext('2d');
+        const chartHum = new Chart(ctxHum, crearConfiguracionGrafica('Hum', '#3498db', 'rgba(52, 152, 219, 0.1)'));
+
+
+        // --- Funciones de Cálculo ---
+        function calcularPromedio(arreglo) {
+            if (arreglo.length === 0) return 0;
+            const suma = arreglo.reduce((a, b) => a + b, 0);
+            return (suma / arreglo.length).toFixed(1); // Retorna con 1 decimal
+        }
+
+        // --- Escuchar Datos del Servidor ---
+        socket.on('datos_sensor', (datos) => {
+            console.log("Datos recibidos:", datos);
+
+            // 1. Actualizar números "Actuales" en pantalla
+            document.getElementById('temp-actual').innerText = datos.temperatura.toFixed(1);
+            document.getElementById('hum-actual').innerText = datos.humedad.toFixed(1);
+
+            // 2. Gestión del Historial (Lógica FIFO: First-In, First-Out)
+            const ahora = new Date().toLocaleTimeString(); // Hora actual para el eje X
+            
+            etiquetasTiempo.push(ahora);
+            historialTemperatura.push(datos.temperatura);
+            historialHumedad.push(datos.humedad);
+
+            // Si excedemos el máximo, borramos el dato más antiguo (el índice 0)
+            if (etiquetasTiempo.length > MAX_DATOS_HISTORIAL) {
+                etiquetasTiempo.shift();
+                historialTemperatura.shift();
+                historialHumedad.shift();
+            }
+
+            // 3. Actualizar Promedios en pantalla
+            document.getElementById('temp-avg').innerText = calcularPromedio(historialTemperatura);
+            document.getElementById('hum-avg').innerText = calcularPromedio(historialHumedad);
+
+            // 4. Actualizar las Gráficas
+            // Simplemente asignamos los arreglos actualizados a los datos de la gráfica
+            chartTemp.data.datasets[0].data = historialTemperatura;
+            chartHum.data.datasets[0].data = historialHumedad;
+            
+            // Llamamos a update() para que Chart.js redibuje
+            chartTemp.update('none'); // 'none' para deshabilitar animaciones de actualización y mejorar rendimiento
+            chartHum.update('none');
+        });
+
+    </script>
+</body>
+</html>
